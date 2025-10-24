@@ -273,7 +273,30 @@ static int lfs_bd_prog(lfs_t *lfs,
 #endif
 
 #ifndef LFS_READONLY
+static int lfs_check_erased(lfs_t* lfs, lfs_block_t block)
+{
+    int err = 0;
+
+    uint8_t data[lfs->cfg->read_size];
+    for (lfs_off_t i = 0; i < lfs->cfg->block_size; i += lfs->cfg->read_size) {
+        err = lfs_bd_read(lfs,
+                NULL, &lfs->rcache, lfs->cfg->block_size-i,
+                block, i, data, lfs->cfg->read_size);
+        if (err) {
+            return err;
+        }
+
+        for (lfs_size_t j = 0; j < lfs->cfg->read_size; j++) {
+            if (data[j] != 0xFF)
+                return -1;
+        }
+    }
+    return 0;
+}
+
 static int lfs_bd_erase(lfs_t *lfs, lfs_block_t block) {
+    if (!lfs_check_erased(lfs, block))
+        return LFS_ERR_OK;
     LFS_ASSERT(block < lfs->block_count);
     int err = lfs->cfg->erase(lfs->cfg, block);
     LFS_ASSERT(err <= 0);
@@ -2918,29 +2941,6 @@ static int lfs_ctz_find(lfs_t *lfs,
 }
 
 #ifndef LFS_READONLY
-static int lfs_check_erased(lfs_t* lfs,
-                            lfs_cache_t *pcache, lfs_cache_t *rcache,
-                            lfs_block_t head, lfs_size_t size)
-{
-    int err = 0;
-
-    for (lfs_off_t i = 0; i < lfs->cfg->block_size; i += lfs->cfg->read_size) {
-        uint8_t data[lfs->cfg->read_size];
-        err = lfs_bd_read(lfs,
-                NULL, rcache, lfs->cfg->block_size-i,
-                head, i, data, lfs->cfg->read_size);
-        if (err) {
-            return err;
-        }
-
-        for (int j = 0; j < lfs->cfg->read_size; j++) {
-            if (data[j] != 0xFF)
-                return -1;
-        }
-    }
-    return 0;
-}
-
 static int lfs_ctz_extend(lfs_t *lfs,
         lfs_cache_t *pcache, lfs_cache_t *rcache,
         lfs_block_t head, lfs_size_t size,
@@ -2954,14 +2954,12 @@ static int lfs_ctz_extend(lfs_t *lfs,
         }
 
         {
-            if (lfs_check_erased(lfs, pcache, rcache, nblock, size)) {
-                err = lfs_bd_erase(lfs, nblock);
-                if (err) {
-                    if (err == LFS_ERR_CORRUPT) {
-                        goto relocate;
-                    }
-                    return err;
+            err = lfs_bd_erase(lfs, nblock);
+            if (err) {
+                if (err == LFS_ERR_CORRUPT) {
+                    goto relocate;
                 }
+                return err;
             }
 
             if (size == 0) {
